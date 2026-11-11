@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# usermgr - Omarchy User Manager TUI
+set -euo pipefail
+
+STATE_DIR="$HOME/.local/state/omarchy/usermanager"
+STATE_FILE="$STATE_DIR/bar-enabled"
+MAIN_USER="$(whoami)"
+
+ensure_state() { mkdir -p "$STATE_DIR"; [[ -f "$STATE_FILE" ]] || echo disabled > "$STATE_FILE"; }
+
+is_protected() {
+  local u="$1"
+  [[ "$u" == "root" || "$u" == "$MAIN_USER" ]] && return 0
+  # system users (uid < 1000) protected
+  local uid; uid=$(id -u "$u" 2>/dev/null || echo 0)
+  (( uid < 1000 )) && return 0
+  return 1
+}
+
+list_regular_users() {
+  awk -F: '$3 >= 1000 && $3 < 65534 {print $1}' /etc/passwd
+}
+
+bar_enabled() { [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "enabled" ]]; }
+
+toggle_bar() {
+  ensure_state
+  if bar_enabled; then echo disabled > "$STATE_FILE"; gum style --foreground 212 "Bar widget disabled."; else echo enabled > "$STATE_FILE"; gum style --foreground 82 "Bar widget enabled."; fi
+  sleep 1
+}
+
+add_user() {
+  local name
+  name=$(gum input --placeholder "New username" --prompt "Username: ") || return
+  [[ -z "$name" ]] && return
+  if id "$name" &>/dev/null; then gum style --foreground 196 "User '$name' already exists."; sleep 1; return; fi
+  local password
+  password=$(gum input --password --placeholder "Password" --prompt "Password: ") || return
+  [[ -z "$password" ]] && { gum style --foreground 196 "Password cannot be empty."; sleep 1; return; }
+  local groups="wheel,video,audio,input,storage,optical,network"
+  sudo useradd -m -G "$groups" -s /bin/bash "$name" || { gum style --foreground 196 "Failed to create user."; sleep 2; return; }
+  echo "$name:$password" | sudo chpasswd
+  gum style --foreground 82 "User '$name' created with groups: $groups."
+  if gum confirm "Copy current user's Omarchy config (~/.config/omarchy, hypr) to '$name'?"; then
+    sudo mkdir -p "/home/$name/.config"
+    sudo cp -r "$HOME/.config/omarchy" "/home/$name/.config/" 2>/dev/null || true
+    sudo cp -r "$HOME/.config/hypr" "/home/$name/.config/" 2>/dev/null || true
+    sudo chown -R "$name:$name" "/home/$name/.config"
+    gum style --foreground 82 "Config copied."
+  fi
+  if gum confirm "Run Omarchy finalize for '$name' now? (requires login as them later anyway)"; then
+    sudo -u "$name" bash -c 'omarchy finalize user --first-install' || true
+  fi
+  sleep 2
+}
+
+delete_user() {
+  local users=()
+  while IFS= read -r u; do
+    if is_protected "$u"; then users+=("$u (protected)"); else users+=("$u"); fi
+  done < <(list_regular_users)
+  local choice
+  choice=$(printf '%s\n' "${users[@]}" | gum choose --header "Select user to delete (protected users cannot be removed)") || return
+  local user="${choice% (protected)}"
+  if is_protected "$user"; then gum style --foreground 196 "Cannot delete protected user '$user'."; sleep 1; return; fi
+  if [[ "$user" == "$MAIN_USER" ]]; then gum style --foreground 196 "Cannot delete yourself."; sleep 1; return; fi
+  if ! gum confirm "Delete user '$user' and their home directory?"; then return; fi
+  sudo userdel -r "$user" || { gum style --foreground 196 "Failed to delete user."; sleep 2; return; }
+  gum style --foreground 82 "User '$user' deleted."
+  sleep 1
+}
+
+reset_password() {
+  local users=(); while IFS= read -r u; do users+=("$u"); done < <(list_regular_users)
+  local user
+  user=$(printf '%s\n' "${users[@]}" | gum choose --header "Select user to reset password") || return
+  [[ -z "$user" ]] && return
+  local password
+  password=$(gum input --password --placeholder "New password" --prompt "New password: ") || return
+  [[ -z "$password" ]] && { gum style --foreground 196 "Password cannot be empty."; sleep 1; return; }
+  echo "$user:$password" | sudo chpasswd
+  gum style --foreground 82 "Password updated for '$user'."
+  sleep 1
+}
+
+manage_groups() {
+  local users=(); while IFS= read -r u; do users+=("$u"); done < <(list_regular_users)
+  local user
+  user=$(printf '%s\n' "${users[@]}" | gum choose --header "Select user") || return
+  [[ -z "$user" ]] && return
+  local groups
+  groups=$(id -nG "$user")
+  gum style --bold "Current groups: $groups"
+  local action
+  action=$(printf 'Add to group\nRemove from group\nBack\n' | gum choose --header "Action") || return
+  case "$action" in
+    "Add to group")
+      local g; g=$(gum input --placeholder "group name" --prompt "Group: ") || return
+      sudo usermod -aG "$g" "$user" && gum style --foreground 82 "Added '$user' to '$g'."
+      ;;
+    "Remove from group")
+      local g; g=$(gum input --placeholder "group name" --prompt "Group: ") || return
+      sudo gpasswd -d "$user" "$g" && gum style --foreground 82 "Removed '$user' from '$g'."
+      ;;
+  esac
+  sleep 1
+}
+
+copy_config() {
+  local users=(); while IFS= read -r u; do
+    [[ "$u" == "$MAIN_USER" ]] && continue
+    users+=("$u")
+  done < <(list_regular_users)
+  [[ ${#users[@]} -eq 0 ]] && { gum style --foreground 196 "No other users."; sleep 1; return; }
+  local user
+  user=$(printf '%s\n' "${users[@]}" | gum choose --header "Copy config to which user?") || return
+  [[ -z "$user" ]] && return
+  if gum confirm "Copy ~/.config/omarchy and ~/.config/hypr from '$MAIN_USER' to '$user'?"; then
+    sudo mkdir -p "/home/$user/.config"
+    sudo rm -rf "/home/$user/.config/omarchy" "/home/$user/.config/hypr"
+    sudo cp -r "$HOME/.config/omarchy" "/home/$user/.config/" 2>/dev/null || true
+    sudo cp -r "$HOME/.config/hypr" "/home/$user/.config/" 2>/dev/null || true
+    sudo chown -R "$user:$user" "/home/$user/.config"
+    gum style --foreground 82 "Config copied to '$user'."
+  fi
+  sleep 1
+}
+
+main_menu() {
+  ensure_state
+  while true; do
+    clear
+    gum style --border double --padding "1 2" --bold "Omarchy User Manager  (current: $MAIN_USER)"
+    local choice
+    choice=$(printf 'List users\nAdd user\nDelete user\nReset password\nManage groups\nCopy Omarchy config\nToggle bar widget (%s)\nExit\n' "$(bar_enabled && echo ON || echo OFF)" | gum choose --header "Choose an action") || break
+    case "$choice" in
+      "List users")
+        clear
+        gum style --bold "Regular users:"
+        for u in $(list_regular_users); do
+          local mark=""; is_protected "$u" && mark="  (protected)"
+          printf '  %-16s uid=%s  groups=%s%s\n' "$u" "$(id -u "$u")" "$(id -nG "$u" | tr ' ' ',')" "$mark"
+        done
+        gum input --placeholder "Press Enter to continue" >/dev/null 2>&1 || true
+        ;;
+      "Add user") add_user ;;
+      "Delete user") delete_user ;;
+      "Reset password") reset_password ;;
+      "Manage groups") manage_groups ;;
+      "Copy Omarchy config") copy_config ;;
+      "Toggle bar widget"*) toggle_bar ;;
+      "Exit") break ;;
+    esac
+  done
+}
+
+main_menu
+EOF
+chmod +x /home/right9zzz/.local/bin/usermgr && echo "created"

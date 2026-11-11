@@ -43,6 +43,6 @@ Item {
 
   Process {
     id: launch
-    command: ["omarchy-launch-tui", "--app-id=org.omarchy.usermanager", "usermgr"]
+    command: ["omarchy-launch-tui", "--app-id=org.omarchy.usermanager", homeDir + "/.config/omarchy/plugins/right9code.usermanager/scripts/usermgr"]
   }
 }
