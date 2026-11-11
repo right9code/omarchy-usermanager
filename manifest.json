@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "right9code.usermanager",
+  "name": "User Manager",
+  "version": "1.0.0",
+  "description": "Manage local user accounts on Omarchy: add, delete, reset password, groups. Main account is protected.",
+  "author": "right9code",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "omarchy": {
+    "clonedFrom": null
+  }
+}
