@@ -155,5 +155,3 @@ main_menu() {
 }
 
 main_menu
-EOF
-chmod +x /home/right9zzz/.local/bin/usermgr && echo "created"
